@@ -2,18 +2,19 @@ use std::{collections::HashMap, path::Path, sync::Arc, thread, time::Instant};
 
 use crossbeam_channel::bounded;
 use helicase::{
-    Config, FastxParser, HelicaseParser, ParserOptions, dna_format::PackedDNA, input::FromFile,
-    parser::Event,
+    Config, FastxParser, HelicaseParser, ParserOptions, input::FromFile, parser::Event,
 };
+use packed_seq::{PackedSeqVec, SeqVec};
 
 use crate::{
     ApproxSpectrum, Counter, CounterBits, FrozenSuperCountingBloom, Result, SuperCountingBloom,
     SuperCountingBloomConfig, SuperCountingBloomError,
 };
 
-const PACKED_FASTX_CONFIG: Config = ParserOptions::default()
+const FASTX_CONFIG: Config = ParserOptions::default()
     .ignore_headers()
-    .dna_packed()
+    .dna_string()
+    .split_non_actg()
     .return_record(false)
     .config();
 
@@ -207,7 +208,7 @@ fn build_filter<C: Counter>(
     cfg: &SuperCountingBloomConfig,
     filter: Arc<SuperCountingBloom<C>>,
 ) -> Result<BuildStats> {
-    let (sender, receiver) = bounded::<PackedDNA>(cfg.queue);
+    let (sender, receiver) = bounded::<Vec<u8>>(cfg.queue);
     let workers: Vec<_> = (0..cfg.threads)
         .map(|_| {
             let receiver = receiver.clone();
@@ -216,7 +217,8 @@ fn build_filter<C: Counter>(
             thread::spawn(move || {
                 let mut inserted_smers = 0_u64;
                 while let Ok(sequence) = receiver.recv() {
-                    inserted_smers += filter.insert_packed_dna(sequence, &cfg);
+                    let packed = PackedSeqVec::from_ascii(&sequence);
+                    inserted_smers += filter.insert_packed_sequence(packed.as_slice(), &cfg);
                 }
                 inserted_smers
             })
@@ -227,8 +229,11 @@ fn build_filter<C: Counter>(
     let mut stats = BuildStats::default();
 
     while let Some(event) = parser.next() {
-        if matches!(event, Event::DnaChunk(_)) && parser.get_dna_len() >= cfg.k {
-            let sequence = parser.get_dna_packed_owned();
+        if matches!(event, Event::DnaChunk(_)) {
+            let sequence = parser.get_dna_string_owned();
+            if sequence.len() < cfg.k {
+                continue;
+            }
             stats.chunks += 1;
             stats.indexed_kmers += (sequence.len() + 1 - cfg.k) as u64;
             sender
@@ -252,7 +257,7 @@ fn estimate_distinct_kmers<C: Counter>(
     cfg: &SuperCountingBloomConfig,
     filter: Arc<FrozenSuperCountingBloom<C>>,
 ) -> Result<QueryEstimates<C>> {
-    let (sender, receiver) = bounded::<PackedDNA>(cfg.queue);
+    let (sender, receiver) = bounded::<Vec<u8>>(cfg.queue);
     let workers: Vec<_> = (0..cfg.threads)
         .map(|_| {
             let receiver = receiver.clone();
@@ -262,7 +267,9 @@ fn estimate_distinct_kmers<C: Counter>(
                 let mut estimates = HashMap::new();
                 let mut queried_kmers = 0_u64;
                 while let Ok(sequence) = receiver.recv() {
-                    queried_kmers += filter.estimate_packed_dna(sequence, &cfg, &mut estimates);
+                    let packed = PackedSeqVec::from_ascii(&sequence);
+                    queried_kmers +=
+                        filter.estimate_packed_sequence(packed.as_slice(), &cfg, &mut estimates);
                 }
                 (estimates, queried_kmers)
             })
@@ -272,8 +279,11 @@ fn estimate_distinct_kmers<C: Counter>(
     let mut parser = open_fastx(path)?;
 
     while let Some(event) = parser.next() {
-        if matches!(event, Event::DnaChunk(_)) && parser.get_dna_len() >= cfg.k {
-            let sequence = parser.get_dna_packed_owned();
+        if matches!(event, Event::DnaChunk(_)) {
+            let sequence = parser.get_dna_string_owned();
+            if sequence.len() < cfg.k {
+                continue;
+            }
             sender
                 .send(sequence)
                 .map_err(|err| SuperCountingBloomError::ChannelClosed(err.to_string()))?;
@@ -302,7 +312,7 @@ fn stream_query_kmers<C: Counter>(
     cfg: &SuperCountingBloomConfig,
     filter: Arc<FrozenSuperCountingBloom<C>>,
 ) -> Result<StreamQueryStats> {
-    let (sender, receiver) = bounded::<PackedDNA>(cfg.queue);
+    let (sender, receiver) = bounded::<Vec<u8>>(cfg.queue);
     let workers: Vec<_> = (0..cfg.threads)
         .map(|_| {
             let receiver = receiver.clone();
@@ -311,7 +321,9 @@ fn stream_query_kmers<C: Counter>(
             thread::spawn(move || {
                 let mut stats = StreamQueryStats::default();
                 while let Ok(sequence) = receiver.recv() {
-                    let abundances = filter.estimate_abundances_packed_dna(sequence, &cfg);
+                    let packed = PackedSeqVec::from_ascii(&sequence);
+                    let abundances =
+                        filter.estimate_abundances_packed_sequence(packed.as_slice(), &cfg);
                     stats.queried_kmers += abundances.len() as u64;
                     for estimate in abundances {
                         if estimate.to_u64() > 0 {
@@ -329,8 +341,11 @@ fn stream_query_kmers<C: Counter>(
     let mut parser = open_fastx(path)?;
 
     while let Some(event) = parser.next() {
-        if matches!(event, Event::DnaChunk(_)) && parser.get_dna_len() >= cfg.k {
-            let sequence = parser.get_dna_packed_owned();
+        if matches!(event, Event::DnaChunk(_)) {
+            let sequence = parser.get_dna_string_owned();
+            if sequence.len() < cfg.k {
+                continue;
+            }
             sender
                 .send(sequence)
                 .map_err(|err| SuperCountingBloomError::ChannelClosed(err.to_string()))?;
@@ -353,12 +368,10 @@ fn stream_query_kmers<C: Counter>(
     Ok(stats)
 }
 
-fn open_fastx(path: &Path) -> Result<FastxParser<'_, PACKED_FASTX_CONFIG>> {
-    FastxParser::<PACKED_FASTX_CONFIG>::from_file(path).map_err(|err| {
-        SuperCountingBloomError::FastxOpen {
-            path: path.display().to_string(),
-            message: err.to_string(),
-        }
+fn open_fastx(path: &Path) -> Result<FastxParser<'_, FASTX_CONFIG>> {
+    FastxParser::<FASTX_CONFIG>::from_file(path).map_err(|err| SuperCountingBloomError::FastxOpen {
+        path: path.display().to_string(),
+        message: err.to_string(),
     })
 }
 
