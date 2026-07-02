@@ -1,6 +1,6 @@
 # SuperCountingBloom
 
-![tests](https://github.com/EtienneC-K/SuperCountingBloom/workflows/tests/badge.svg)
+[![tests](https://github.com/Malfoy/SCBF/actions/workflows/tests.yaml/badge.svg)](https://github.com/Malfoy/SCBF/actions/workflows/tests.yaml)
 
 A Rust implementation of a SuperCounting Bloom filter for streaming DNA
 `k`-mer abundance indexing, abundance querying, and approximate `k`-mer spectra.
