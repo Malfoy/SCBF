@@ -15,8 +15,8 @@ clap = { version = "4.5.51", features = ["derive"] }
 crossbeam-channel = "0.5.15"
 helicase = { version = "0.1.1", features = ["packed-seq"] }
 num_cpus = "1.17.0"
-packed-seq = "4.4.2"
-simd-minimizers = "2.3.1"
+packed-seq = { version = "4.4.2", features = ["scalar"] }
+simd-minimizers = { version = "2.3.1", features = ["scalar"] }
 
 [[bin]]
 name = "super-counting-bloom"
