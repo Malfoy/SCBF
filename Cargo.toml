@@ -1,0 +1,30 @@
+[package]
+name = "super-counting-bloom"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+description = "SuperBloom-style abundance estimator for DNA k-mer spectra"
+readme = "README.md"
+repository = "https://github.com/EtienneC-K/SuperCountingBloom"
+keywords = ["bioinformatics", "kmer", "bloom-filter", "genomics", "minimizer"]
+categories = ["science"]
+exclude = ["target/", "data/", "results/", "paper/", "benchmark/results/"]
+
+[dependencies]
+clap = { version = "4.5.51", features = ["derive"] }
+crossbeam-channel = "0.5.15"
+helicase = { version = "0.1.1", features = ["packed-seq"] }
+num_cpus = "1.17.0"
+packed-seq = "4.4.2"
+simd-minimizers = "2.3.1"
+
+[[bin]]
+name = "super-counting-bloom"
+path = "src/main.rs"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+panic = "abort"
+strip = "symbols"
